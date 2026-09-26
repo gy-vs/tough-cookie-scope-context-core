@@ -206,7 +206,6 @@ function getCookieContext(url: unknown): URL | urlParse<string> {
 
 type SameSiteLevel = keyof (typeof Cookie)['sameSiteLevel']
 function checkSameSiteContext(value: string): SameSiteLevel | undefined {
-  validators.validate(validators.isNonEmptyString(value), value)
   const context = String(value).toLowerCase()
   if (context === 'none' || context === 'lax' || context === 'strict') {
     return context
@@ -223,7 +222,6 @@ function checkSameSiteContext(value: string): SameSiteLevel | undefined {
  * @returns boolean
  */
 function isSecurePrefixConditionMet(cookie: Cookie): boolean {
-  validators.validate(validators.isObject(cookie), safeToString(cookie))
   const startsWithSecurePrefix =
     typeof cookie.key === 'string' && cookie.key.startsWith('__Secure-')
   return !startsWithSecurePrefix || cookie.secure
@@ -241,7 +239,6 @@ function isSecurePrefixConditionMet(cookie: Cookie): boolean {
  * @returns boolean
  */
 function isHostPrefixConditionMet(cookie: Cookie): boolean {
-  validators.validate(validators.isObject(cookie))
   const startsWithHostPrefix =
     typeof cookie.key === 'string' && cookie.key.startsWith('__Host-')
   return (
@@ -330,12 +327,16 @@ export class CookieJar {
     }
     let syncErr: Error | null = null
     let syncResult: T | undefined = undefined
-    fn.call(this, (error: Error | null, result?: T | undefined) => {
-      syncErr = error
-      syncResult = result
-    })
-    // These seem to be false positives; it can't detect that the value may be changed in the callback
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, @typescript-eslint/only-throw-error
+
+    try {
+      fn.call(this, (error: Error | null, result?: T | undefined) => {
+        syncErr = error
+        syncResult = result
+      })
+    } catch (err) {
+      syncErr = err as Error
+    }
+
     if (syncErr) throw syncErr
 
     return syncResult
@@ -436,36 +437,38 @@ export class CookieJar {
     }
     const promiseCallback = createPromiseCallback(callback)
     const cb = promiseCallback.callback
+    let context: URL | urlParse<string>
 
-    if (typeof url === 'string') {
-      validators.validate(
-        validators.isNonEmptyString(url),
-        callback,
-        safeToString(options),
-      )
-    }
+    try {
+      if (typeof url === 'string') {
+        validators.validate(
+          validators.isNonEmptyString(url),
+          safeToString(options),
+        )
+      }
 
-    const context = getCookieContext(url)
+      context = getCookieContext(url)
 
-    let err
+      if (typeof url === 'function') {
+        return promiseCallback.reject(new Error('No URL was specified'))
+      }
 
-    if (typeof url === 'function') {
-      return promiseCallback.reject(new Error('No URL was specified'))
-    }
+      if (typeof options === 'function') {
+        options = defaultSetCookieOptions
+      }
 
-    if (typeof options === 'function') {
-      options = defaultSetCookieOptions
-    }
+      validators.validate(typeof cb === 'function', cb)
 
-    validators.validate(typeof cb === 'function', cb)
-
-    if (
-      !validators.isNonEmptyString(cookie) &&
-      !validators.isObject(cookie) &&
-      cookie instanceof String &&
-      cookie.length == 0
-    ) {
-      return promiseCallback.resolve(undefined)
+      if (
+        !validators.isNonEmptyString(cookie) &&
+        !validators.isObject(cookie) &&
+        cookie instanceof String &&
+        cookie.length == 0
+      ) {
+        return promiseCallback.resolve(undefined)
+      }
+    } catch (err) {
+      return promiseCallback.reject(err as Error)
     }
 
     const host = canonicalDomain(context.hostname) ?? null
@@ -483,7 +486,7 @@ export class CookieJar {
     if (typeof cookie === 'string' || cookie instanceof String) {
       const parsedCookie = Cookie.parse(cookie.toString(), { loose: loose })
       if (!parsedCookie) {
-        err = new Error('Cookie failed to parse')
+        const err = new Error('Cookie failed to parse')
         return options?.ignoreError
           ? promiseCallback.resolve(undefined)
           : promiseCallback.reject(err)
@@ -492,7 +495,7 @@ export class CookieJar {
     } else if (!(cookie instanceof Cookie)) {
       // If you're seeing this error, and are passing in a Cookie object,
       // it *might* be a Cookie object from another loaded version of tough-cookie.
-      err = new Error(
+      const err = new Error(
         'First argument to setCookie must be a Cookie object or string',
       )
 
@@ -521,7 +524,7 @@ export class CookieJar {
             : null
         if (suffix == null && !IP_V6_REGEX_OBJECT.test(cookie.domain)) {
           // e.g. "com"
-          err = new Error('Cookie has domain set to a public suffix')
+          const err = new Error('Cookie has domain set to a public suffix')
 
           return options?.ignoreError
             ? promiseCallback.resolve(undefined)
@@ -544,7 +547,7 @@ export class CookieJar {
       if (
         !domainMatch(host ?? undefined, cookie.cdomain() ?? undefined, false)
       ) {
-        err = new Error(
+        const err = new Error(
           `Cookie not in this host's domain. Cookie:${
             cookie.cdomain() ?? 'null'
           } Request:${host ?? 'null'}`,
@@ -576,7 +579,7 @@ export class CookieJar {
 
     // S5.3 step 10
     if (options?.http === false && cookie.httpOnly) {
-      err = new Error("Cookie is HttpOnly and this isn't an HTTP API")
+      const err = new Error("Cookie is HttpOnly and this isn't an HTTP API")
       return options.ignoreError
         ? promiseCallback.resolve(undefined)
         : promiseCallback.reject(err)
@@ -593,7 +596,9 @@ export class CookieJar {
       //  exact match for request-uri's host's registered domain, then
       //  abort these steps and ignore the newly created cookie entirely."
       if (sameSiteContext === 'none') {
-        err = new Error('Cookie is SameSite but this is a cross-origin request')
+        const err = new Error(
+          'Cookie is SameSite but this is a cross-origin request',
+        )
         return options?.ignoreError
           ? promiseCallback.resolve(undefined)
           : promiseCallback.reject(err)
@@ -741,6 +746,18 @@ export class CookieJar {
    * - The {@link Cookie.lastAccessed} property will be updated on all returned cookies.
    *
    * @param url - The domain to store the cookie with.
+   */
+  getCookies(url: string): Promise<Cookie[]>
+  /**
+   * Retrieve the list of cookies that can be sent in a Cookie header for the
+   * current URL.
+   *
+   * @remarks
+   * - The array of cookies returned will be sorted according to {@link cookieCompare}.
+   *
+   * - The {@link Cookie.lastAccessed} property will be updated on all returned cookies.
+   *
+   * @param url - The domain to store the cookie with.
    * @param callback - A function to call after a cookie has been successfully retrieved.
    */
   getCookies(url: string, callback: Callback<Cookie[]>): void
@@ -803,13 +820,21 @@ export class CookieJar {
     }
     const promiseCallback = createPromiseCallback(callback)
     const cb = promiseCallback.callback
+    let context: URL | urlParse<string>
 
-    if (typeof url === 'string') {
-      validators.validate(validators.isNonEmptyString(url), cb, url)
+    try {
+      if (typeof url === 'string') {
+        validators.validate(validators.isNonEmptyString(url), url)
+      }
+
+      context = getCookieContext(url)
+
+      validators.validate(validators.isObject(options), safeToString(options))
+
+      validators.validate(typeof cb === 'function', cb)
+    } catch (parameterError) {
+      return promiseCallback.reject(parameterError as Error)
     }
-    const context = getCookieContext(url)
-    validators.validate(validators.isObject(options), cb, safeToString(options))
-    validators.validate(typeof cb === 'function', cb)
 
     const host = canonicalDomain(context.hostname)
     const path = context.pathname || '/'
@@ -1147,9 +1172,7 @@ export class CookieJar {
    */
   serialize(callback?: Callback<SerializedCookieJar>): unknown {
     const promiseCallback = createPromiseCallback<SerializedCookieJar>(callback)
-    const cb = promiseCallback.callback
 
-    validators.validate(typeof cb === 'function', cb)
     let type: string | null = this.store.constructor.name
     if (validators.isObject(type)) {
       type = null

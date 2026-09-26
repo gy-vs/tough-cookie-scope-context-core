@@ -71,13 +71,12 @@ function parseCookiePair(
   looseMode: boolean,
 ): Cookie | undefined {
   cookiePair = trimTerminator(cookiePair)
-  validators.validate(validators.isString(cookiePair), cookiePair)
 
   let firstEq = cookiePair.indexOf('=')
   if (looseMode) {
     if (firstEq === 0) {
       // '=' is immediately at start
-      cookiePair = cookiePair.substr(1)
+      cookiePair = cookiePair.substring(1)
       firstEq = cookiePair.indexOf('=') // might still need to split on '='
     }
   } else {
@@ -285,7 +284,7 @@ function fromJSON(str: unknown): Cookie | undefined {
   if (typeof str === 'string') {
     try {
       obj = JSON.parse(str)
-    } catch (e) {
+    } catch {
       return undefined
     }
   } else {
