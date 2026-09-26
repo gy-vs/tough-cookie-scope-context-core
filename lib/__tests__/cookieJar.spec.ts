@@ -34,6 +34,7 @@ import { CookieJar } from '../cookie/cookieJar'
 import type { SerializedCookieJar } from '../cookie/constants'
 import { MemoryCookieStore } from '../memstore'
 import { Store } from '../store'
+import { ParameterError } from '../validators'
 
 // ported from:
 // - test/api_test.js (cookie jar tests)
@@ -1169,12 +1170,12 @@ it('should fix issue #144', async () => {
   ])
 })
 
-it('should fix issue #145 - missing 2nd url parameter', () => {
+it('should fix issue #145 - missing 2nd url parameter', async () => {
   const cookieJar = new CookieJar()
-  expect(
+  await expect(
     // @ts-expect-error test case explicitly violates the expected function signature
-    () => cookieJar.setCookie('x=y; Domain=example.com; Path=/'),
-  ).toThrowError('`url` argument is not a string or URL.')
+    cookieJar.setCookie('x=y; Domain=example.com; Path=/', undefined),
+  ).rejects.toThrow('`url` argument is not a string or URL.')
 })
 
 it('should fix issue #197 - CookieJar().setCookie throws an error when empty cookie is passed', async () => {
@@ -1485,6 +1486,98 @@ describe('Synchronous API on async CookieJar', () => {
     expect(() => {
       cookieJar.removeAllCookiesSync()
     }).toThrow('CookieJar store is not synchronous; use async API instead.')
+  })
+})
+
+describe('validation errors invoke callbacks', () => {
+  it('getCookies', (done) => {
+    const invalidUrl = {}
+    const cookieJar = new CookieJar()
+    // @ts-expect-error deliberately trigger validation error
+    void cookieJar.getCookies(invalidUrl, (err) => {
+      expect(err).toMatchObject({
+        message: '`url` argument is not a string or URL.',
+      })
+      done()
+    })
+  })
+
+  it('setCookie', (done) => {
+    const invalidUrl = {}
+    const cookieJar = new CookieJar()
+    // @ts-expect-error deliberately trigger validation error
+    void cookieJar.setCookie('a=b', invalidUrl, (err) => {
+      expect(err).toMatchObject({
+        message: '`url` argument is not a string or URL.',
+      })
+      done()
+    })
+  })
+
+  it('getCookies invokes the callback exactly once for an invalid URL', () => {
+    const cookieJar = new CookieJar()
+    const calls: [Error | null, Cookie[] | undefined][] = []
+    // the default MemoryCookieStore is synchronous, so any callback that
+    // will be invoked has been invoked by the time the call returns
+    cookieJar.getCookies('', (err, cookies) => {
+      calls.push([err, cookies])
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.[0]).toBeInstanceOf(ParameterError)
+  })
+
+  it('setCookie invokes the callback exactly once and stores nothing for an invalid URL', () => {
+    const cookieJar = new CookieJar()
+    const calls: [Error | null, Cookie | undefined][] = []
+    cookieJar.setCookie('a=b', '', (err, cookie) => {
+      calls.push([err, cookie])
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.[0]).toBeInstanceOf(ParameterError)
+    // a failed call must not leave anything behind in the jar
+    expect(cookieJar.getCookiesSync('http://example.com')).toEqual([])
+  })
+
+  it('getCookies rejects the promise instead of throwing synchronously for an invalid URL', async () => {
+    const cookieJar = new CookieJar()
+    // @ts-expect-error deliberately trigger validation error
+    await expect(cookieJar.getCookies(123)).rejects.toBeInstanceOf(
+      ParameterError,
+    )
+  })
+
+  it('setCookie rejects the promise instead of throwing synchronously for an invalid URL', async () => {
+    const cookieJar = new CookieJar()
+    // @ts-expect-error deliberately trigger validation error
+    await expect(cookieJar.setCookie('a=b', undefined)).rejects.toBeInstanceOf(
+      ParameterError,
+    )
+  })
+
+  it('a failed call does not affect subsequent calls', async () => {
+    const cookieJar = new CookieJar()
+    // @ts-expect-error deliberately trigger validation error
+    await expect(cookieJar.setCookie('a=b', undefined)).rejects.toBeInstanceOf(
+      ParameterError,
+    )
+    await expect(
+      cookieJar.setCookie('a=b', 'http://example.com'),
+    ).resolves.toMatchObject({ key: 'a', value: 'b' })
+    await expect(cookieJar.getCookies('http://example.com')).resolves.toEqual([
+      expect.objectContaining({ key: 'a', value: 'b' }),
+    ])
+  })
+
+  it('sync API still throws validation errors synchronously', () => {
+    const cookieJar = new CookieJar()
+    expect(() =>
+      // @ts-expect-error deliberately trigger validation error
+      cookieJar.setCookieSync('a=b', undefined),
+    ).toThrow(ParameterError)
+    expect(() =>
+      // @ts-expect-error deliberately trigger validation error
+      cookieJar.getCookiesSync(123),
+    ).toThrow(ParameterError)
   })
 })
 
